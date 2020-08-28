@@ -56,14 +56,20 @@ class PartialModel(pynamodb.models.Model):
     Model without defined region and credentials
     """
 
-    @classmethod
-    def attach_credentials(cls, session: boto3.Session, region_name: str = None) -> __class__:
-        credentials = session.get_credentials()
-        ssm = session.client('ssm', region_name=region_name)
-        _table_name = ssm.get_parameter(Name=cls.table_parameter_name)['Parameter']['Value']
+    table_parameter_name: ClassVar[str]
 
-        @functools.wraps(__class__)
-        class Completed(cls):
+    @classmethod
+    def attach_credentials(
+        cls, session: boto3.Session, region_name: str = None
+    ) -> Type[PartialModel]:
+        credentials = session.get_credentials()
+        ssm = session.client("ssm", region_name=region_name)
+        _table_name = ssm.get_parameter(Name=cls.table_parameter_name)["Parameter"][
+            "Value"
+        ]
+
+        @functools.wraps(PartialModel)
+        class Completed(PartialModel):
             class Meta:
                 table_name = _table_name
                 region = region_name
