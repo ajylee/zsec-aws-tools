@@ -1,10 +1,11 @@
+from __future__ import annotations
 import botocore
 import botocore.model
 import boto3
 import abc
 import json
 import collections.abc as cabc
-from typing import Tuple, Dict, List, Optional, Mapping, Callable, Generator, Set, Any, Union, Iterable
+from typing import Tuple, Dict, List, Optional, Mapping, Callable, Generator, Any, Union, Iterable
 from functools import partial
 import logging
 import time
@@ -361,13 +362,14 @@ class AWSResource(abc.ABC):
         If it returns a string, it means this resource exists.
 
         """
-        for res in self.list_with_tags(self.session, self.region_name):  # type: AWSResource
+        res: AWSResource
+        for res in self.list_with_tags(self.session, self.region_name):
             if res.ztid == self.ztid and (not self.clouducer_path or res.clouducer_path == self.clouducer_path):
                 return res.index_id
 
     @classmethod
     @abc.abstractmethod
-    def list_with_tags(cls, session, region_name=None, sync=False) -> Generator['AWSResource', None, None]:
+    def list_with_tags(cls, session, region_name=None, sync=False) -> Generator[AWSResource, None, None]:
         pass
 
     @abc.abstractmethod
@@ -392,7 +394,7 @@ class AWSResource(abc.ABC):
         """
         pass
 
-    def _process_config_value(self, shape: Optional[Shape], value):
+    def _process_config_value(self, shape: Optional[Shape], value) -> Any:
         vv = value
 
         while isinstance(vv, cabc.Callable):
