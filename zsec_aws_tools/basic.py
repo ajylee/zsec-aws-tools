@@ -5,7 +5,7 @@ import boto3
 import abc
 import json
 import collections.abc as cabc
-from typing import Tuple, Dict, List, Optional, Mapping, Callable, Generator, Any, Union, Iterable
+from typing import Tuple, Dict, List, Optional, Mapping, Callable, Generator, Any, Union, Iterable, ClassVar, Type
 from functools import partial
 import logging
 import time
@@ -191,6 +191,99 @@ def decode_from_verbose_aws_tags(tag_list: Iterable[Dict[str, str]]) -> Dict[str
     return {item['Key']: item['Value'] for item in tag_list}
 
 
+class Resource(abc.ABC):
+    @abc.abstractmethod
+    @property
+    def manager(self) -> str:
+        ...
+
+    @abc.abstractmethod
+    @manager.setter
+    def manager(self, value: str):
+        ...
+
+    @abc.abstractmethod
+    @property
+    def config(self) -> Mapping:
+        ...
+
+    @abc.abstractmethod
+    @config.setter
+    def config(self, config: Mapping) -> None:
+        ...
+
+    @abc.abstractmethod
+    def put(self, wait: bool = True, force: bool = False):
+        """Create or update resource according to config. Idempotent.
+
+        :param wait: whether to wait on resource creation. Only applicable if resource is awaitable.
+        :param force: whether to force update even if the resource fails manager checks. Not always implemented.
+        :return:
+        """
+        pass
+
+
+@attr.s(auto_attribs=True)
+class CoreAWSResource(Resource):
+    """Represents an AWS Resource, with no complex init. Attrs-based dataclass.
+
+    Favor this over AWSResource going forward. Use a specialized initializer for
+    complex initialization.
+
+    """
+
+    description_top_key: str  #: The key used in `describe()` or `get()` to obtain the description from the AWS API.
+    sdk_name: ClassVar[str]  #: Name of resource type used in sdk functions, for example create_*, delete_*, etc.
+    session: boto3.Session
+    region_name: str
+    service_name: str
+    index_id_key: str  #: The key that is given to `describe()` or `get()` to obtain description.
+    index_id: str  #: The id that is given to `describe()` or `get()` to obtain description.
+    not_found_exception_name: str
+    parameter_converters: Mapping[str, Callable] = MappingProxyType({})
+    custom_parameter_shapes: Mapping[str, Shape] = MappingProxyType({})
+    non_creation_parameters = ()
+    non_creation_parameter_handlers = ()
+
+    _sdk_name_plural_form_override: ClassVar[
+        Optional[str]] = None  #: The plural form of the sdk name. Defaults to None.
+    #: The key for getting the name of the resource from the AWS description. Defaults to "Name".
+    name_key: str = 'Name'
+
+    @property
+    @abc.abstractmethod
+    def manager(self) -> str:
+        ...
+
+    @manager.setter
+    @abc.abstractmethod
+    def manager(self, value: str):
+        ...
+
+    @property
+    @abc.abstractmethod
+    def config(self) -> Mapping[str, Any]:
+        ...
+
+    @config.setter
+    @abc.abstractmethod
+    def config(self, config: Mapping) -> None:
+        ...
+
+    @classmethod
+    @abc.abstractmethod
+    def from_index_id(self, session, index_id):
+        # TODO
+        pass
+
+    @classmethod
+    def sdk_name_plural_form(cls) -> str:
+        return cls._sdk_name_plural_form_override or (
+            cls.sdk_name[:-1] + 'ies' if cls.sdk_name[-1] == 'y' and cls.sdk_name[-2] not in 'aeou'
+            else cls.sdk_name + 's'
+        )
+
+
 class AWSResource(abc.ABC):
     _description_top_key: str
     sdk_name: str  # name in sdk functions, for example create_*, delete_*, etc.
@@ -311,7 +404,7 @@ class AWSResource(abc.ABC):
         combined_kwargs.update(self.processed_config)
         combined_kwargs.update(kwargs)
         client_method = getattr(self.service_client, "create_{}".format(self.sdk_name))
-        
+
         resp = apply_with_relevant_kwargs(self.service_client, client_method, combined_kwargs)
         description = resp.get(self._description_top_key, resp)
         index_id = description.get(self.index_id_key)
@@ -483,6 +576,63 @@ class AwaitableAWSResource(AWSResource, abc.ABC):
 
     def wait_until_exists(self):
         self.wait(self.existence_waiter_name)
+
+
+@attr.s(auto_attribs=True)
+class AWSServiceResource(abc.ABC):
+    service_name: str
+    session: boto3.Session
+    index_id: str
+    region_name: str
+    description_top_key: str
+    core_aws_service_resource_class: ClassVar[Type[CoreAWSResource]]
+
+    @classmethod
+    def from_aws_resource(cls, res: CoreAWSResource) -> AWSServiceResource:
+        return cls(
+            service_name=res.service_name,
+            session=res.session,
+            index_id=res.index_id,
+            region_name=res.region_name,
+            description_top_key=res.description_top_key,
+        )
+
+    def __call__(self):
+        cls = getattr(self.session.resource(self.service_name, region_name=self.region_name), self.description_top_key)
+        return cls(self.index_id)
+
+    @classmethod
+    def list_with_tags(cls, session, region_name=None, sync=False) -> Iterable[CoreAWSResource]:
+        service_resource = session.resource(cls.service_name, region_name=region_name)
+
+        # scroll(getattr(self.service_client, list_{}, Scope='Local')
+        collection = getattr(service_resource, cls.core_aws_service_resource_class.sdk_name_plural_form()).all()
+
+        yield from filter(None, map_async(partial(cls._tagged_resource, session=session, region_name=region_name),
+                                          collection, sync=sync))
+
+    @classmethod
+    def _tagged_resource(
+            cls,
+            boto_res,
+            session: boto3.Session,
+            region_name: str
+    ) -> Optional[AWSResource]:
+        index_id, tags = cls._get_index_id_and_tags_from_boto3_resource(boto_res, session, region_name)
+        if tags:
+            return cls(session=session,
+                       region_name=region_name,
+                       index_id=index_id,
+                       ztid=pipe(tags.get('ztid'), lambda x: uuid.UUID(x) if x else None),
+                       clouducer_path=tags.get('clouducer_path'),
+                       config={'Tags': tags},
+                       assume_exists=True)
+
+    @classmethod
+    @abc.abstractmethod
+    def _get_index_id_and_tags_from_boto3_resource(cls, boto_res, session: boto3.Session, region_name: str) \
+            -> Tuple[str, Optional[Dict]]:
+        pass
 
 
 class HasServiceResource(AWSResource, abc.ABC):
