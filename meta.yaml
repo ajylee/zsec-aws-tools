@@ -1,0 +1,14 @@
+{% set name = "zsec-aws-tools" %}
+{% set version = "0.1.8" %}
+
+package:
+    name: {{ name|lower }}
+    version: {{ version }}
+
+
+requirements:
+    host:
+        - python
+        - pip
+    run:
+        - python
