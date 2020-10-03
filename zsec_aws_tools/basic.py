@@ -223,9 +223,14 @@ class Resource(abc.ABC):
         pass
 
 
+class AWSEnvironment:
+    session: boto3.Session
+    region_name: str
+
+
 @attr.s(auto_attribs=True)
-class CoreAWSResource(Resource):
-    """Represents an AWS Resource, with no complex init. Attrs-based dataclass.
+class CoreAWSResourceType:
+    """Metadata on an AWS Resource type, with no complex init. Attrs-based dataclass.
 
     Favor this over AWSResource going forward. Use a specialized initializer for
     complex initialization.
@@ -233,48 +238,18 @@ class CoreAWSResource(Resource):
     """
 
     description_top_key: str  #: The key used in `describe()` or `get()` to obtain the description from the AWS API.
-    sdk_name: ClassVar[str]  #: Name of resource type used in sdk functions, for example create_*, delete_*, etc.
-    session: boto3.Session
-    region_name: str
+    sdk_name: str  #: Name of resource type used in sdk functions, for example create_*, delete_*, etc.
     service_name: str
     index_id_key: str  #: The key that is given to `describe()` or `get()` to obtain description.
-    index_id: str  #: The id that is given to `describe()` or `get()` to obtain description.
     not_found_exception_name: str
     parameter_converters: Mapping[str, Callable] = MappingProxyType({})
     custom_parameter_shapes: Mapping[str, Shape] = MappingProxyType({})
     non_creation_parameters = ()
     non_creation_parameter_handlers = ()
 
-    _sdk_name_plural_form_override: ClassVar[
-        Optional[str]] = None  #: The plural form of the sdk name. Defaults to None.
+    _sdk_name_plural_form_override: Optional[str] = None  #: The plural form of the sdk name. Defaults to None.
     #: The key for getting the name of the resource from the AWS description. Defaults to "Name".
     name_key: str = 'Name'
-
-    @property
-    @abc.abstractmethod
-    def manager(self) -> str:
-        ...
-
-    @manager.setter
-    @abc.abstractmethod
-    def manager(self, value: str):
-        ...
-
-    @property
-    @abc.abstractmethod
-    def config(self) -> Mapping[str, Any]:
-        ...
-
-    @config.setter
-    @abc.abstractmethod
-    def config(self, config: Mapping) -> None:
-        ...
-
-    @classmethod
-    @abc.abstractmethod
-    def from_index_id(self, session, index_id):
-        # TODO
-        pass
 
     @classmethod
     def sdk_name_plural_form(cls) -> str:
@@ -282,6 +257,49 @@ class CoreAWSResource(Resource):
             cls.sdk_name[:-1] + 'ies' if cls.sdk_name[-1] == 'y' and cls.sdk_name[-2] not in 'aeou'
             else cls.sdk_name + 's'
         )
+
+
+class CoreAWSResource(Resource):
+    index_id: str  #: The id that is given to `describe()` or `get()` to obtain description.
+    resource_type: CoreAWSResourceType
+    config: Mapping[str, Any]
+    _processed_config: Mapping[str, Any]
+    manager: str
+
+    @classmethod
+    @abc.abstractmethod
+    def from_index_id(cls, env: AWSEnvironment, index_id: str):
+        # TODO
+        pass
+
+    @classmethod
+    @abc.abstractmethod
+    def from_name(cls, env: AWSEnvironment, name: str):
+        # TODO
+        pass
+
+    @abc.abstractmethod
+    def put(self, wait: bool = True, force: bool = False):
+        """Create or update resource according to config. Idempotent.
+
+        :param wait: whether to wait on resource creation. Only applicable if resource is awaitable.
+        :param force: whether to force update even if the resource fails manager checks. Not always implemented.
+        :return:
+        """
+        pass
+
+    @abc.abstractmethod
+    def delete(self, not_exists_ok: bool = False, **kwargs) -> Optional[Dict]:
+        pass
+
+    @abc.abstractmethod
+    def exists(self) -> bool:
+        pass
+
+
+"""
+
+"""
 
 
 class AWSResource(abc.ABC):
